@@ -99,8 +99,8 @@ const TILE_LAYERS = {
   }
 };
 
-// Add India's center coordinates and zoom level
-const INDIA_CENTER = [20.5937, 78.9629];  // Center of India
+// Update the India center coordinates with proper typing
+const INDIA_CENTER: L.LatLngTuple = [20.5937, 78.9629];  // Center of India
 const INDIA_DEFAULT_ZOOM = 5;  // Shows most of India
 
 // Add these type definitions at the top of your file
@@ -141,9 +141,9 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
       position: 'bottomright'
     }).addTo(map);
 
-    // Add India boundary restrictions
-    const southWest = L.latLng(6.7548, 68.1862);
-    const northEast = L.latLng(35.6745, 97.3959);
+    // Add India boundary restrictions with proper typing
+    const southWest: L.LatLngTuple = [6.7548, 68.1862];    // India's SW corner
+    const northEast: L.LatLngTuple = [35.6745, 97.3959];   // India's NE corner
     const bounds = L.latLngBounds(southWest, northEast);
     
     map.setMaxBounds(bounds);
