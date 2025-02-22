@@ -43,7 +43,7 @@ declare module 'leaflet' {
 }
 
 interface MapProps {
-  onAreaUpdate?: (newArea: number) => void;
+  onAreaUpdate?: (area: number) => void;
 }
 
 interface SearchResult {
@@ -250,7 +250,7 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
     
     // Call the onAreaUpdate prop if it exists
     if (onAreaUpdate) {
-      onAreaSize(convertedArea);
+      onAreaUpdate(convertedArea);
     }
   };
 
