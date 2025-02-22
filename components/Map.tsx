@@ -10,6 +10,13 @@ if (typeof window !== 'undefined') {
   require('leaflet-draw');
 }
 
+// Add this type declaration at the top of the file
+declare module 'leaflet' {
+  namespace GeometryUtil {
+    function geodesicArea(latLngs: L.LatLng[]): number;
+  }
+}
+
 interface MapProps {}
 
 interface SearchResult {
@@ -120,7 +127,7 @@ const Map: React.FC<MapProps> = () => {
     let totalArea = 0;
     drawnItemsRef.current.eachLayer((layer: any) => {
       if (layer instanceof L.Polygon) {
-        const latLngs = layer.getLatLngs()[0];
+        const latLngs = layer.getLatLngs()[0] as L.LatLng[];
         totalArea = L.GeometryUtil.geodesicArea(latLngs);
       }
     });
