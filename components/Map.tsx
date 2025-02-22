@@ -10,10 +10,30 @@ if (typeof window !== 'undefined') {
   require('leaflet-draw');
 }
 
-// Add this type declaration at the top of the file
+// Add these type declarations at the top of the file
 declare module 'leaflet' {
   namespace GeometryUtil {
     function geodesicArea(latLngs: L.LatLng[]): number;
+  }
+
+  namespace Draw {
+    class Polygon {
+      constructor(map: L.Map, options?: L.DrawOptions);
+      enable(): void;
+    }
+  }
+
+  interface DrawOptions {
+    showArea?: boolean;
+    shapeOptions?: {
+      color?: string;
+      fillColor?: string;
+      fillOpacity?: number;
+      weight?: number;
+      opacity?: number;
+    };
+    touchIcon?: L.DivIcon;
+    allowIntersection?: boolean;
   }
 }
 
@@ -140,7 +160,8 @@ const Map: React.FC<MapProps> = () => {
   const startDrawing = () => {
     if (!mapRef.current) return;
     
-    const polygonDrawHandler = new L.Draw.Polygon(mapRef.current, {
+    // Now TypeScript knows about L.Draw.Polygon
+    const polygonDrawHandler = new L.Draw.Polygon(mapRef.current as L.Map, {
       showArea: true,
       shapeOptions: {
         color: '#3388ff',
@@ -158,6 +179,7 @@ const Map: React.FC<MapProps> = () => {
     });
     
     polygonDrawHandler.enable();
+    setIsDrawing(true);
   };
 
   useEffect(() => {
