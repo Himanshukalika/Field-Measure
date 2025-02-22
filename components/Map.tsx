@@ -32,13 +32,13 @@ const Map: React.FC<MapProps> = () => {
 
     if (!mapRef.current && mapContainerRef.current) {
       mapRef.current = L.map(mapContainerRef.current, {
-        // Move zoom control to bottom left
-        zoomControl: false  // First disable default zoom control
+        // Disable default zoom control
+        zoomControl: false
       }).setView([23.5937, 78.9629], 5);
       
-      // Add custom positioned zoom control
+      // Add custom positioned zoom control to bottom right
       L.control.zoom({
-        position: 'bottomleft'
+        position: 'bottomright'
       }).addTo(mapRef.current);
       
       L.tileLayer('https://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}', {
