@@ -103,6 +103,12 @@ const TILE_LAYERS = {
 const INDIA_CENTER = [20.5937, 78.9629];  // Center of India
 const INDIA_DEFAULT_ZOOM = 5;  // Shows most of India
 
+// Add these type definitions at the top of your file
+type UndoAction = {
+  type: 'add' | 'delete';
+  layer: L.Layer;
+};
+
 const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -114,29 +120,11 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
   const [areaSize, setAreaSize] = useState<string>('0');
   const [selectedUnit, setSelectedUnit] = useState<MeasurementUnit>('ha');
   const [mapLayer, setMapLayer] = useState<'satellite' | 'terrain' | 'street'>('satellite');
-  const [undoStack, setUndoStack] = useState<L.LatLng[][]>([]);
-  const [redoStack, setRedoStack] = useState<L.LatLng[][]>([]);
+  const [undoStack, setUndoStack] = useState<UndoAction[]>([]);
+  const [redoStack, setRedoStack] = useState<UndoAction[]>([]);
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'searching' | 'found' | 'error'>('idle');
   const [locationError, setLocationError] = useState<string>('');
   const [drawHandler, setDrawHandler] = useState<any>(null);
-
-  // Add this function before your useEffect
-  const handleDrawCreated = (e: any) => {
-    const layer = e.layer;
-    if (drawnItemsRef.current) {
-      drawnItemsRef.current.addLayer(layer);
-      
-      // Save to undo stack
-      setUndoStack(prev => [...prev, {
-        type: 'add',
-        layer: layer
-      }]);
-      setRedoStack([]);
-
-      // Update area calculation
-      updateAreaSize();
-    }
-  };
 
   // Update your useEffect for map initialization
   useEffect(() => {
@@ -478,37 +466,64 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
     };
   }, []);
 
-  // Undo/Redo functions
-  const handleUndo = () => {
-    if (undoStack.length > 0) {
-      const lastPolygon = undoStack[undoStack.length - 1];
-      setUndoStack(prev => prev.slice(0, -1));
-      setRedoStack(prev => [...prev, lastPolygon]);
+  // Update the handleDrawCreated function
+  const handleDrawCreated = (e: any) => {
+    const layer = e.layer;
+    if (drawnItemsRef.current) {
+      drawnItemsRef.current.addLayer(layer);
       
-      if (drawnItemsRef.current) {
-        drawnItemsRef.current.clearLayers();
-        if (undoStack.length > 1) {
-          const polygon = L.polygon(undoStack[undoStack.length - 2]);
-          drawnItemsRef.current.addLayer(polygon);
-          updateAreaSize();
-        }
-      }
+      // Save to undo stack with correct typing
+      setUndoStack(prev => [...prev, {
+        type: 'add',
+        layer: layer
+      }]);
+      setRedoStack([]);
+
+      // Update area calculation
+      updateAreaSize();
     }
   };
 
-  const handleRedo = () => {
-    if (redoStack.length > 0) {
-      const nextPolygon = redoStack[redoStack.length - 1];
-      setRedoStack(prev => prev.slice(0, -1));
-      setUndoStack(prev => [...prev, nextPolygon]);
-      
-      if (drawnItemsRef.current) {
-        drawnItemsRef.current.clearLayers();
-        const polygon = L.polygon(nextPolygon);
-        drawnItemsRef.current.addLayer(polygon);
-        updateAreaSize();
-      }
+  // Update the handleUndo function
+  const handleUndo = () => {
+    if (undoStack.length === 0 || !drawnItemsRef.current) return;
+
+    const lastAction = undoStack[undoStack.length - 1];
+    setUndoStack(prev => prev.slice(0, -1));
+
+    if (lastAction.type === 'add') {
+      drawnItemsRef.current.removeLayer(lastAction.layer);
+      setRedoStack(prev => [...prev, lastAction]);
+    } else if (lastAction.type === 'delete') {
+      drawnItemsRef.current.addLayer(lastAction.layer);
+      setRedoStack(prev => [...prev, {
+        type: 'add',
+        layer: lastAction.layer
+      }]);
     }
+
+    updateAreaSize();
+  };
+
+  // Update the handleRedo function if you have one
+  const handleRedo = () => {
+    if (redoStack.length === 0 || !drawnItemsRef.current) return;
+
+    const lastAction = redoStack[redoStack.length - 1];
+    setRedoStack(prev => prev.slice(0, -1));
+
+    if (lastAction.type === 'add') {
+      drawnItemsRef.current.addLayer(lastAction.layer);
+      setUndoStack(prev => [...prev, lastAction]);
+    } else if (lastAction.type === 'delete') {
+      drawnItemsRef.current.removeLayer(lastAction.layer);
+      setUndoStack(prev => [...prev, {
+        type: 'delete',
+        layer: lastAction.layer
+      }]);
+    }
+
+    updateAreaSize();
   };
 
   // Add some CSS to style the zoom controls
