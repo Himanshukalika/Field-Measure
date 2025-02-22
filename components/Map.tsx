@@ -55,11 +55,53 @@ interface SearchResult {
 type MeasurementUnit = 'ha' | 'sqm' | 'acre' | 'sqft';
 
 const UNIT_CONVERSIONS = {
-  ha: 1,
-  sqm: 10000,
-  acre: 2.47105,
-  sqft: 107639
+  ha: {
+    toSqMeters: 10000,
+    fromSqMeters: 1/10000,
+    decimals: 2
+  },
+  sqm: {
+    toSqMeters: 1,
+    fromSqMeters: 1,
+    decimals: 0
+  },
+  acre: {
+    toSqMeters: 4046.86,
+    fromSqMeters: 1/4046.86,
+    decimals: 2
+  },
+  sqft: {
+    toSqMeters: 0.092903,
+    fromSqMeters: 1/0.092903,
+    decimals: 0
+  }
 };
+
+// Update the TILE_LAYERS constant with appropriate zoom levels
+const TILE_LAYERS = {
+  satellite: {
+    url: 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}',  // Updated to Google Satellite
+    attribution: '&copy; Google Maps',
+    maxNativeZoom: 21,  // Maximum zoom level where tiles are available
+    maxZoom: 21        // Maximum zoom level for the map
+  },
+  terrain: {
+    url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; OpenTopoMap contributors',
+    maxNativeZoom: 17,
+    maxZoom: 17
+  },
+  street: {
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    attribution: '&copy; OpenStreetMap contributors',
+    maxNativeZoom: 19,
+    maxZoom: 19
+  }
+};
+
+// Add India's center coordinates and zoom level
+const INDIA_CENTER = [20.5937, 78.9629];  // Center of India
+const INDIA_DEFAULT_ZOOM = 5;  // Shows most of India
 
 const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
   const mapRef = useRef<L.Map | null>(null);
@@ -76,102 +118,166 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
   const [redoStack, setRedoStack] = useState<L.LatLng[][]>([]);
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'searching' | 'found' | 'error'>('idle');
   const [locationError, setLocationError] = useState<string>('');
+  const [drawHandler, setDrawHandler] = useState<any>(null);
 
+  // Add this function before your useEffect
+  const handleDrawCreated = (e: any) => {
+    const layer = e.layer;
+    if (drawnItemsRef.current) {
+      drawnItemsRef.current.addLayer(layer);
+      
+      // Save to undo stack
+      setUndoStack(prev => [...prev, {
+        type: 'add',
+        layer: layer
+      }]);
+      setRedoStack([]);
+
+      // Update area calculation
+      updateAreaSize();
+    }
+  };
+
+  // Update your useEffect for map initialization
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    if (!mapContainerRef.current || mapRef.current) return;
 
-    if (!mapRef.current && mapContainerRef.current) {
-      mapRef.current = L.map(mapContainerRef.current, {
-        // Disable default zoom control
-        zoomControl: false
-      }).setView([23.5937, 78.9629], 5);
-      
-      // Add custom positioned zoom control to bottom right
-      L.control.zoom({
-        position: 'bottomright'
-      }).addTo(mapRef.current);
-      
-      L.tileLayer('https://{s}.google.com/vt/lyrs=s,h&x={x}&y={y}&z={z}', {
-        maxZoom: 21,
+    const map = L.map(mapContainerRef.current, {
+      minZoom: 4,
+      maxZoom: TILE_LAYERS[mapLayer].maxZoom,
+      zoomControl: false,  // Disable default zoom control
+    }).setView(INDIA_CENTER, INDIA_DEFAULT_ZOOM);
+    
+    // Add custom zoom control to bottom right
+    L.control.zoom({
+      position: 'bottomright'
+    }).addTo(map);
+
+    // Add India boundary restrictions
+    const southWest = L.latLng(6.7548, 68.1862);
+    const northEast = L.latLng(35.6745, 97.3959);
+    const bounds = L.latLngBounds(southWest, northEast);
+    
+    map.setMaxBounds(bounds);
+    map.on('drag', () => {
+      map.panInsideBounds(bounds, { animate: false });
+    });
+    
+    mapRef.current = map;
+
+    // Initialize the base tile layer with proper zoom settings
+    let currentBaseLayer = L.tileLayer(TILE_LAYERS[mapLayer].url, {
+      attribution: TILE_LAYERS[mapLayer].attribution,
+      maxNativeZoom: TILE_LAYERS[mapLayer].maxNativeZoom,
+      maxZoom: TILE_LAYERS[mapLayer].maxZoom
+    }).addTo(map);
+
+    // Add labels layer for satellite view with proper zoom settings
+    let labelsLayer: L.TileLayer | null = null;
+    if (mapLayer === 'satellite') {
+      labelsLayer = L.tileLayer('https://{s}.google.com/vt/lyrs=h&x={x}&y={y}&z={z}', {
         subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
-        attribution: '© Google Maps'
-      }).addTo(mapRef.current);
-
-      // Initialize drawing feature group
-      drawnItemsRef.current = new L.FeatureGroup();
-      mapRef.current.addLayer(drawnItemsRef.current);
-
-      // Drawing events
-      mapRef.current.on(L.Draw.Event.DRAWSTART, () => {
-        setIsDrawing(true);
-        if (drawnItemsRef.current) {
-          drawnItemsRef.current.clearLayers();
-        }
-      });
-
-      mapRef.current.on(L.Draw.Event.DRAWSTOP, () => {
-        setIsDrawing(false);
-      });
-
-      mapRef.current.on(L.Draw.Event.CREATED, (e: any) => {
-        const layer = e.layer;
-        drawnItemsRef.current?.addLayer(layer);
-        updateAreaSize();
-        
-        // Save for undo
-        const coordinates = layer.getLatLngs()[0];
-        setUndoStack(prev => [...prev, coordinates]);
-        setRedoStack([]);
-
-        // Make the polygon editable
-        layer.editing.enable();
-      });
-
-      // Update area when polygon is edited
-      mapRef.current.on('editable:editing', updateAreaSize);
+        pane: 'overlayPane',
+        opacity: 0.9,
+        maxNativeZoom: 19,
+        maxZoom: 19
+      }).addTo(map);
     }
 
-    // Handle window resize
-    const handleResize = () => {
-      if (mapRef.current) {
-        mapRef.current.invalidateSize();
-      }
-    };
+    // Create the FeatureGroup for drawn items
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+    drawnItemsRef.current = drawnItems;
 
-    window.addEventListener('resize', handleResize);
+    // Add draw created event listener
+    map.on((L as any).Draw.Event.CREATED, handleDrawCreated);
+
+    // Add draw events for editing if needed
+    map.on((L as any).Draw.Event.EDITED, (e: any) => {
+      updateAreaSize();
+    });
+
+    map.on((L as any).Draw.Event.DELETED, (e: any) => {
+      updateAreaSize();
+    });
+
+    // Cleanup function
     return () => {
-      window.removeEventListener('resize', handleResize);
-      if (mapRef.current) {
-        mapRef.current.remove();
-        mapRef.current = null;
-      }
+      map.remove();
+      mapRef.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    if (!mapRef.current) return;
+    
+    const map = mapRef.current;
+    
+    // Update map max zoom based on selected layer
+    map.setMaxZoom(TILE_LAYERS[mapLayer].maxZoom);
+    
+    // Remove existing layers
+    map.eachLayer((layer: any) => {
+      if (layer instanceof L.TileLayer) {
+        map.removeLayer(layer);
+      }
+    });
+    
+    // Add new base layer with proper zoom settings
+    L.tileLayer(TILE_LAYERS[mapLayer].url, {
+      attribution: TILE_LAYERS[mapLayer].attribution,
+      maxNativeZoom: TILE_LAYERS[mapLayer].maxNativeZoom,
+      maxZoom: TILE_LAYERS[mapLayer].maxZoom
+    }).addTo(map);
+
+    // Add labels layer for satellite view with proper zoom settings
+    if (mapLayer === 'satellite') {
+      L.tileLayer('https://{s}.google.com/vt/lyrs=h&x={x}&y={y}&z={z}', {
+        subdomains: ['mt0', 'mt1', 'mt2', 'mt3'],
+        pane: 'overlayPane',
+        opacity: 0.9,
+        maxNativeZoom: 19,
+        maxZoom: 19
+      }).addTo(map);
+    }
+  }, [mapLayer]);
 
   const updateAreaSize = () => {
     if (!drawnItemsRef.current) return;
     
-    let totalArea = 0;
+    let totalAreaInSqMeters = 0;
     drawnItemsRef.current.eachLayer((layer: any) => {
       if (layer instanceof L.Polygon) {
         const latLngs = layer.getLatLngs()[0] as L.LatLng[];
-        totalArea = L.GeometryUtil.geodesicArea(latLngs);
+        totalAreaInSqMeters = L.GeometryUtil.geodesicArea(latLngs);
       }
     });
 
-    // Convert to selected unit
-    const convertedArea = totalArea / 10000 * UNIT_CONVERSIONS[selectedUnit];
-    setAreaSize(convertedArea.toFixed(2));
+    // Convert from square meters to selected unit
+    const conversion = UNIT_CONVERSIONS[selectedUnit];
+    const convertedArea = totalAreaInSqMeters * conversion.fromSqMeters;
+    
+    // Format with appropriate decimal places
+    setAreaSize(convertedArea.toFixed(conversion.decimals));
     
     // Call the onAreaUpdate prop if it exists
     if (onAreaUpdate) {
-      onAreaUpdate(convertedArea);
+      onAreaSize(convertedArea);
     }
   };
 
   const startDrawing = () => {
     if (!mapRef.current) return;
     
+    // If already drawing, disable it
+    if (isDrawing && drawHandler) {
+      drawHandler.disable();
+      setDrawHandler(null);
+      setIsDrawing(false);
+      return;
+    }
+
+    // Start new drawing
     const polygonDrawHandler = new (L as any).Draw.Polygon(mapRef.current, {
       showArea: true,
       shapeOptions: {
@@ -190,6 +296,7 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
     });
     
     polygonDrawHandler.enable();
+    setDrawHandler(polygonDrawHandler);
     setIsDrawing(true);
   };
 
@@ -404,41 +511,46 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
     }
   };
 
-  // Save measurement data
-  const saveMeasurement = async () => {
-    if (!drawnItemsRef.current) return;
+  // Add some CSS to style the zoom controls
+  useEffect(() => {
+    // Add custom CSS for zoom controls
+    const style = document.createElement('style');
+    style.textContent = `
+      .leaflet-control-zoom {
+        margin-bottom: 80px !important;  /* Add space above bottom tools */
+        margin-right: 20px !important;   /* Add space from right edge */
+        border: none !important;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3) !important;
+      }
+      .leaflet-control-zoom a {
+        width: 36px !important;
+        height: 36px !important;
+        line-height: 36px !important;
+        border-radius: 8px !important;
+        background-color: white !important;
+        color: #666 !important;
+        border: 1px solid #ddd !important;
+      }
+      .leaflet-control-zoom a:first-child {
+        margin-bottom: 4px !important;
+      }
+      .leaflet-control-zoom a:hover {
+        background-color: #f4f4f4 !important;
+        color: #333 !important;
+      }
+    `;
+    document.head.appendChild(style);
 
-    const measurementData = {
-      area: areaSize,
-      unit: selectedUnit,
-      coordinates: drawnItemsRef.current.getLayers().map((layer: any) => 
-        layer.getLatLngs()[0].map((latlng: L.LatLng) => ({
-          lat: latlng.lat,
-          lng: latlng.lng
-        }))
-      ),
-      timestamp: new Date().toISOString()
+    return () => {
+      document.head.removeChild(style);
     };
-
-    try {
-      // Here you can implement your save logic
-      // Example: Save to localStorage
-      const savedMeasurements = JSON.parse(localStorage.getItem('measurements') || '[]');
-      savedMeasurements.push(measurementData);
-      localStorage.setItem('measurements', JSON.stringify(savedMeasurements));
-      
-      alert('Measurement saved successfully!');
-    } catch (error) {
-      console.error('Error saving measurement:', error);
-      alert('Failed to save measurement');
-    }
-  };
+  }, []);
 
   return (
-    <div className="relative w-full h-screen flex flex-col">
-      {/* Search Bar - Responsive positioning */}
-      <div className="absolute z-[1000] w-full px-4 sm:px-0 sm:w-72 sm:right-4 top-4">
-        <div className="bg-white rounded-lg shadow-lg">
+    <div className="absolute inset-0">
+      {/* Search Bar */}
+      <div className="absolute top-4 right-4 z-[1000] w-[calc(100%-32px)] sm:w-[300px] px-4 sm:px-0">
+        <div className="bg-white shadow-lg rounded-lg">
           <div className="p-2">
             <div className="relative flex items-center">
               <FaSearch className="absolute left-3 text-gray-400" />
@@ -446,23 +558,23 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search in Rajasthan..."
-                className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm sm:text-base"
+                placeholder="Search location..."
+                className="w-full pl-10 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               {isSearching && (
-                <div className="absolute right-3 text-gray-500">
-                  ...
+                <div className="absolute right-3">
+                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-gray-300 border-t-blue-600" />
                 </div>
               )}
             </div>
 
             {searchResults.length > 0 && (
-              <div className="mt-2 bg-white rounded-lg shadow-lg max-h-60 overflow-y-auto">
+              <div className="mt-2 max-h-60 overflow-y-auto">
                 {searchResults.map((result, index) => (
                   <div
                     key={index}
                     onClick={() => handleResultClick(result)}
-                    className="p-2 hover:bg-gray-100 cursor-pointer border-b last:border-b-0 text-sm sm:text-base"
+                    className="px-3 py-2 hover:bg-gray-50 cursor-pointer text-sm border-b last:border-b-0"
                   >
                     {result.display_name}
                   </div>
@@ -473,135 +585,147 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
         </div>
       </div>
 
-      {/* Drawing Tools Panel */}
-      <div className="absolute z-[1000] left-4 top-4 bg-white rounded-lg shadow-lg p-4">
-        <div className="text-center mb-4 font-semibold text-gray-700">
-          Field Measurement
-        </div>
-        <div className="flex flex-col gap-3">
-          <button
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-              isDrawing ? 'bg-blue-500 text-white' : 'bg-gray-100 hover:bg-gray-200'
-            }`}
-            onClick={startDrawing}
-          >
-            <FaPen size={16} />
-            <span>Draw Field</span>
-          </button>
-          
-          <div className="flex gap-2">
-            <button
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200"
-              onClick={handleUndo}
-              disabled={undoStack.length === 0}
-            >
-              <FaUndo size={16} />
-            </button>
-            <button
-              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200"
-              onClick={handleRedo}
-              disabled={redoStack.length === 0}
-            >
-              <FaRedo size={16} />
-            </button>
-          </div>
-
-          <button
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
-              gpsStatus === 'searching' 
-                ? 'bg-yellow-100 text-yellow-800' 
-                : gpsStatus === 'found'
-                ? 'bg-green-100 text-green-800'
-                : gpsStatus === 'error'
-                ? 'bg-red-100 text-red-800'
-                : 'bg-gray-100 hover:bg-gray-200'
-            }`}
-            onClick={getCurrentLocation}
-            disabled={gpsStatus === 'searching'}
-          >
-            {gpsStatus === 'searching' ? (
-              <MdGpsNotFixed className="animate-spin" size={16} />
-            ) : (
-              <MdGpsFixed size={16} />
-            )}
-            <span>
-              {gpsStatus === 'searching' 
-                ? 'Getting Location...' 
-                : gpsStatus === 'found'
-                ? 'Location Found'
-                : 'My Location'}
-            </span>
-          </button>
-
-          {locationError && (
-            <div className="mt-2 text-sm text-red-600 bg-red-50 p-2 rounded">
-              {locationError}
-            </div>
-          )}
-
+      {/* Area Display - Further reduced width */}
+      <div className="absolute top-24 sm:top-4 left-1/2 -translate-x-1/2 z-[1000] bg-white shadow-lg rounded-lg px-2 py-1 sm:px-4 sm:py-2 w-[200px] sm:w-auto">
+        <div className="flex items-center justify-between sm:justify-start gap-1 sm:gap-2">
+          <span className="text-gray-500 text-xs sm:text-base whitespace-nowrap">Area:</span>
+          <span className="font-semibold text-blue-600 text-xs sm:text-base">{areaSize}</span>
           <select
-            className="px-4 py-2 rounded-lg border border-gray-200"
+            className="ml-1 text-xs sm:text-base bg-gray-50 border border-gray-200 rounded px-1 py-0.5 sm:px-2 sm:py-1 outline-none focus:ring-2 focus:ring-blue-500"
             value={selectedUnit}
             onChange={(e) => {
               setSelectedUnit(e.target.value as MeasurementUnit);
               updateAreaSize();
             }}
           >
-            <option value="ha">Hectares</option>
-            <option value="sqm">Square Meters</option>
-            <option value="acre">Acres</option>
-            <option value="sqft">Square Feet</option>
+            <option value="ha">ha</option>
+            <option value="sqm">m²</option>
+            <option value="acre">ac</option>
+            <option value="sqft">ft²</option>
           </select>
-
-          <select
-            className="px-4 py-2 rounded-lg border border-gray-200"
-            value={mapLayer}
-            onChange={(e) => setMapLayer(e.target.value as 'satellite' | 'terrain' | 'street')}
-          >
-            <option value="satellite">Satellite</option>
-            <option value="terrain">Terrain</option>
-            <option value="street">Street</option>
-          </select>
-
-          <button
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-500 text-white hover:bg-green-600"
-            onClick={saveMeasurement}
-          >
-            <FaSave size={16} />
-            <span>Save</span>
-          </button>
-
-          <button
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200"
-            onClick={() => {
-              if (drawnItemsRef.current) {
-                drawnItemsRef.current.clearLayers();
-                setAreaSize('0');
-                setUndoStack([]);
-                setRedoStack([]);
-              }
-            }}
-          >
-            <FaTrash size={16} />
-            <span>Clear</span>
-          </button>
-
-          <div className="mt-2 p-3 bg-gray-50 rounded-lg">
-            <div className="flex items-center gap-2 text-sm text-gray-600">
-              <FaRuler />
-              <span>Area Size</span>
-            </div>
-            <div className="text-lg font-semibold text-blue-600">
-              {areaSize} {selectedUnit}
-            </div>
-          </div>
         </div>
       </div>
 
-      {/* Map Container - Responsive height */}
+      {/* Left Sidebar Tools Panel */}
+      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 sm:left-4 sm:top-1/2 sm:-translate-y-1/2 sm:translate-x-0 z-[1000]">
+        <div className="bg-white shadow-lg rounded-lg p-2 sm:p-3">
+          <div className="flex sm:flex-col gap-2 sm:gap-3">
+            {/* GPS Button */}
+            <button
+              className={`flex items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-lg transition-all duration-200 relative group ${
+                gpsStatus === 'searching' 
+                  ? 'bg-yellow-50 text-yellow-700'
+                  : gpsStatus === 'found'
+                  ? 'bg-green-50 text-green-700'
+                  : gpsStatus === 'error'
+                  ? 'bg-red-50 text-red-700'
+                  : 'bg-gray-50 hover:bg-gray-100'
+              }`}
+              onClick={getCurrentLocation}
+              disabled={gpsStatus === 'searching'}
+              title="My Location"
+            >
+              {gpsStatus === 'searching' ? (
+                <MdGpsNotFixed className="animate-spin" size={20} />
+              ) : (
+                <MdGpsFixed size={20} />
+              )}
+              <span className="hidden sm:block absolute left-full ml-2 bg-black text-white text-sm px-2 py-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap">
+                My Location
+              </span>
+            </button>
+
+            {/* Updated Draw Button */}
+            <button
+              className={`flex items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-lg transition-all duration-200 relative group ${
+                isDrawing 
+                  ? 'bg-blue-500 text-white shadow-inner' 
+                  : 'bg-gray-50 hover:bg-gray-100'
+              }`}
+              onClick={startDrawing}
+              title={isDrawing ? "Stop Drawing" : "Draw Field"}
+            >
+              <FaPen size={18} />
+              <span className="hidden sm:block absolute left-full ml-2 bg-black text-white text-sm px-2 py-1 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap">
+                {isDrawing ? "Stop Drawing" : "Draw Field"}
+              </span>
+            </button>
+
+            {/* Undo Button */}
+            <button
+              className="flex items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-lg bg-gray-50 hover:bg-gray-100 transition-all duration-200 disabled:opacity-50 relative group"
+              onClick={handleUndo}
+              disabled={undoStack.length === 0}
+              title="Undo"
+            >
+              <FaUndo size={18} />
+              <span className="hidden sm:block absolute left-full ml-2 bg-black text-white text-sm px-2 py-1 rounded opacity-0 group-hover:opacity-100">
+                Undo
+              </span>
+            </button>
+
+            {/* Redo Button */}
+            <button
+              className="flex items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-lg bg-gray-50 hover:bg-gray-100 transition-all duration-200 disabled:opacity-50 relative group"
+              onClick={handleRedo}
+              disabled={redoStack.length === 0}
+              title="Redo"
+            >
+              <FaRedo size={18} />
+              <span className="hidden sm:block absolute left-full ml-2 bg-black text-white text-sm px-2 py-1 rounded opacity-0 group-hover:opacity-100">
+                Redo
+              </span>
+            </button>
+
+            {/* Layer Selector */}
+            <button
+              className="flex items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-lg bg-gray-50 hover:bg-gray-100 transition-all duration-200 relative group"
+              onClick={() => {
+                const layers = ['satellite', 'terrain', 'street'];
+                const currentIndex = layers.indexOf(mapLayer);
+                const nextIndex = (currentIndex + 1) % layers.length;
+                setMapLayer(layers[nextIndex] as 'satellite' | 'terrain' | 'street');
+              }}
+              title="Change Map Layer"
+            >
+              <FaLayerGroup size={18} />
+              <span className="hidden sm:block absolute left-full ml-2 bg-black text-white text-sm px-2 py-1 rounded opacity-0 group-hover:opacity-100">
+                {mapLayer.charAt(0).toUpperCase() + mapLayer.slice(1)} View
+              </span>
+            </button>
+
+            {/* Clear Button */}
+            <button
+              className="flex items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-lg bg-gray-50 hover:bg-gray-100 transition-all duration-200 relative group"
+              onClick={() => {
+                if (drawnItemsRef.current) {
+                  drawnItemsRef.current.clearLayers();
+                  setAreaSize('0');
+                  setUndoStack([]);
+                  setRedoStack([]);
+                }
+              }}
+              title="Clear All"
+            >
+              <FaTrash size={18} />
+              <span className="hidden sm:block absolute left-full ml-2 bg-black text-white text-sm px-2 py-1 rounded opacity-0 group-hover:opacity-100">
+                Clear All
+              </span>
+            </button>
+          </div>
+
+          {locationError && (
+            <div className="mt-2 text-xs text-red-600 bg-red-50 p-2 rounded-lg">
+              {locationError}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Map Container */}
       <div 
         ref={mapContainerRef} 
-        className="flex-1 w-full h-full min-h-[300px] rounded-lg shadow-lg"
+        className="w-full h-full"
       />
     </div>
   );
