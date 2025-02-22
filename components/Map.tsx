@@ -42,7 +42,9 @@ declare module 'leaflet' {
   }
 }
 
-interface MapProps {}
+interface MapProps {
+  onAreaUpdate?: (newArea: number) => void;
+}
 
 interface SearchResult {
   display_name: string;
@@ -59,7 +61,7 @@ const UNIT_CONVERSIONS = {
   sqft: 107639
 };
 
-const Map: React.FC<MapProps> = () => {
+const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const drawnItemsRef = useRef<L.FeatureGroup | null>(null);
@@ -160,6 +162,11 @@ const Map: React.FC<MapProps> = () => {
     // Convert to selected unit
     const convertedArea = totalArea / 10000 * UNIT_CONVERSIONS[selectedUnit];
     setAreaSize(convertedArea.toFixed(2));
+    
+    // Call the onAreaUpdate prop if it exists
+    if (onAreaUpdate) {
+      onAreaUpdate(convertedArea);
+    }
   };
 
   const startDrawing = () => {
