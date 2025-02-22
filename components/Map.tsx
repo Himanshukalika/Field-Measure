@@ -133,111 +133,11 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
     const map = L.map(mapContainerRef.current, {
       minZoom: 4,
       maxZoom: TILE_LAYERS[mapLayer].maxZoom,
-      zoomControl: false,
-      worldCopyJump: true,
-      maxBoundsViscosity: 0,
-      // Enable rotate plugin
-      rotate: true,
-      rotateControl: {
-        closeOnZeroBearing: false,
-        position: 'bottomright',
-        bearing: 0
-      },
+      zoomControl: false,  // Disable default zoom control
+      worldCopyJump: true, // Enable seamless world wrapping
+      maxBoundsViscosity: 0, // Allow free movement
     }).setView(INDIA_CENTER, INDIA_DEFAULT_ZOOM);
     
-    // Add rotation control
-    const rotateControl = L.control.rotate({
-      position: 'bottomright',
-      closeOnZeroBearing: false,
-      bearingText: '°',
-      compact: true
-    }).addTo(map);
-
-    // Add compass control
-    const compass = L.control.compass({
-      position: 'bottomright',
-      autoActive: true,
-      showDigit: true,
-      width: 40,
-      height: 40,
-      className: 'compass-control'
-    }).addTo(map);
-
-    // Add custom CSS for rotation controls
-    const style = document.createElement('style');
-    style.textContent = `
-      .leaflet-control-rotate {
-        background-color: white;
-        padding: 5px;
-        border-radius: 4px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-        margin-bottom: 10px !important;
-      }
-      .compass-control {
-        background-color: white;
-        border-radius: 4px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-        margin-bottom: 10px !important;
-      }
-      .leaflet-control-rotate-toggle {
-        width: 36px;
-        height: 36px;
-        background-color: white;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      }
-      .leaflet-control-rotate-toggle:hover {
-        background-color: #f4f4f4;
-      }
-    `;
-    document.head.appendChild(style);
-
-    // Add keyboard controls for rotation
-    document.addEventListener('keydown', (e) => {
-      if (!map) return;
-      
-      const rotationAmount = 5; // degrees
-      if (e.key === 'r') {
-        // Rotate clockwise
-        const currentRotation = map.getBearing() || 0;
-        map.setBearing((currentRotation + rotationAmount) % 360);
-      } else if (e.key === 'R') {
-        // Rotate counter-clockwise
-        const currentRotation = map.getBearing() || 0;
-        map.setBearing((currentRotation - rotationAmount + 360) % 360);
-      }
-    });
-
-    // Add touch rotation support
-    let startAngle = 0;
-    map.on('touchstart', (e: any) => {
-      if (e.touches.length === 2) {
-        const touch1 = e.touches[0];
-        const touch2 = e.touches[1];
-        startAngle = Math.atan2(
-          touch2.clientY - touch1.clientY,
-          touch2.clientX - touch1.clientX
-        ) * (180 / Math.PI);
-      }
-    });
-
-    map.on('touchmove', (e: any) => {
-      if (e.touches.length === 2) {
-        const touch1 = e.touches[0];
-        const touch2 = e.touches[1];
-        const angle = Math.atan2(
-          touch2.clientY - touch1.clientY,
-          touch2.clientX - touch1.clientX
-        ) * (180 / Math.PI);
-        const rotation = angle - startAngle;
-        map.setBearing(rotation);
-      }
-    });
-
     // Add custom zoom control to bottom right
     L.control.zoom({
       position: 'bottomright'
@@ -285,7 +185,6 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
 
     // Cleanup function
     return () => {
-      document.head.removeChild(style);
       map.remove();
       mapRef.current = null;
     };
