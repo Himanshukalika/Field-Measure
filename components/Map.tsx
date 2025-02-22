@@ -134,6 +134,8 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
       minZoom: 4,
       maxZoom: TILE_LAYERS[mapLayer].maxZoom,
       zoomControl: false,  // Disable default zoom control
+      worldCopyJump: true, // Enable seamless world wrapping
+      maxBoundsViscosity: 0, // Allow free movement
     }).setView(INDIA_CENTER, INDIA_DEFAULT_ZOOM);
     
     // Add custom zoom control to bottom right
@@ -141,15 +143,11 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
       position: 'bottomright'
     }).addTo(map);
 
-    // Add India boundary restrictions with proper typing
-    const southWest: L.LatLngTuple = [6.7548, 68.1862];    // India's SW corner
-    const northEast: L.LatLngTuple = [35.6745, 97.3959];   // India's NE corner
-    const bounds = L.latLngBounds(southWest, northEast);
-    
-    map.setMaxBounds(bounds);
-    map.on('drag', () => {
-      map.panInsideBounds(bounds, { animate: false });
-    });
+    // Remove bounds restrictions
+    // const southWest: L.LatLngTuple = [6.7548, 68.1862];
+    // const northEast: L.LatLngTuple = [35.6745, 97.3959];
+    // const bounds = L.latLngBounds(southWest, northEast);
+    // map.setMaxBounds(bounds);
     
     mapRef.current = map;
 
@@ -157,7 +155,8 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
     let currentBaseLayer = L.tileLayer(TILE_LAYERS[mapLayer].url, {
       attribution: TILE_LAYERS[mapLayer].attribution,
       maxNativeZoom: TILE_LAYERS[mapLayer].maxNativeZoom,
-      maxZoom: TILE_LAYERS[mapLayer].maxZoom
+      maxZoom: TILE_LAYERS[mapLayer].maxZoom,
+      noWrap: false, // Allow the map to wrap around the world
     }).addTo(map);
 
     // Add labels layer for satellite view with proper zoom settings
@@ -168,7 +167,8 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
         pane: 'overlayPane',
         opacity: 0.9,
         maxNativeZoom: 19,
-        maxZoom: 19
+        maxZoom: 19,
+        noWrap: false, // Allow the labels to wrap around the world
       }).addTo(map);
     }
 
@@ -180,14 +180,8 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate }) => {
     // Add draw created event listener
     map.on((L as any).Draw.Event.CREATED, handleDrawCreated);
 
-    // Add draw events for editing if needed
-    map.on((L as any).Draw.Event.EDITED, (e: any) => {
-      updateAreaSize();
-    });
-
-    map.on((L as any).Draw.Event.DELETED, (e: any) => {
-      updateAreaSize();
-    });
+    // Remove the drag event listener that was restricting movement
+    // map.off('drag');
 
     // Cleanup function
     return () => {
