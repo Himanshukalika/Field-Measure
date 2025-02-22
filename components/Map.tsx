@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
-import { FaSearch, FaPen, FaTrash, FaRuler } from 'react-icons/fa';
+import { FaSearch, FaPen, FaTrash, FaRuler, FaUndo, FaRedo, FaSave, FaLayerGroup, FaLocationArrow } from 'react-icons/fa';
+import { MdGpsFixed, MdGpsNotFixed } from 'react-icons/md';
 
 // Import leaflet-draw properly
 if (typeof window !== 'undefined') {
@@ -17,6 +18,15 @@ interface SearchResult {
   lon: string;
 }
 
+type MeasurementUnit = 'ha' | 'sqm' | 'acre' | 'sqft';
+
+const UNIT_CONVERSIONS = {
+  ha: 1,
+  sqm: 10000,
+  acre: 2.47105,
+  sqft: 107639
+};
+
 const Map: React.FC<MapProps> = () => {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -26,6 +36,12 @@ const Map: React.FC<MapProps> = () => {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [areaSize, setAreaSize] = useState<string>('0');
+  const [selectedUnit, setSelectedUnit] = useState<MeasurementUnit>('ha');
+  const [mapLayer, setMapLayer] = useState<'satellite' | 'terrain' | 'street'>('satellite');
+  const [undoStack, setUndoStack] = useState<L.LatLng[][]>([]);
+  const [redoStack, setRedoStack] = useState<L.LatLng[][]>([]);
+  const [gpsStatus, setGpsStatus] = useState<'idle' | 'searching' | 'found' | 'error'>('idle');
+  const [locationError, setLocationError] = useState<string>('');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -68,6 +84,11 @@ const Map: React.FC<MapProps> = () => {
         drawnItemsRef.current?.addLayer(layer);
         updateAreaSize();
         
+        // Save for undo
+        const coordinates = layer.getLatLngs()[0];
+        setUndoStack(prev => [...prev, coordinates]);
+        setRedoStack([]);
+
         // Make the polygon editable
         layer.editing.enable();
       });
@@ -104,9 +125,9 @@ const Map: React.FC<MapProps> = () => {
       }
     });
 
-    // Convert to hectares and format
-    const areaInHectares = totalArea / 10000;
-    setAreaSize(areaInHectares.toFixed(2));
+    // Convert to selected unit
+    const convertedArea = totalArea / 10000 * UNIT_CONVERSIONS[selectedUnit];
+    setAreaSize(convertedArea.toFixed(2));
   };
 
   const startDrawing = () => {
@@ -183,6 +204,196 @@ const Map: React.FC<MapProps> = () => {
     setSearchQuery('');
   };
 
+  // Enhanced GPS Location function
+  const getCurrentLocation = () => {
+    if (!("geolocation" in navigator)) {
+      setLocationError("GPS not supported in your browser");
+      setGpsStatus('error');
+      return;
+    }
+
+    setGpsStatus('searching');
+    setLocationError('');
+
+    const options = {
+      enableHighAccuracy: true, // Request high accuracy
+      timeout: 10000,          // Time to wait for response (10 seconds)
+      maximumAge: 0            // Don't use cached position
+    };
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        
+        if (accuracy > 100) { // If accuracy is worse than 100 meters
+          setLocationError(`Warning: GPS accuracy is ${Math.round(accuracy)}m`);
+        }
+
+        if (mapRef.current) {
+          // Smoothly animate to the location
+          mapRef.current.flyTo([latitude, longitude], 18, {
+            duration: 2
+          });
+
+          // Add a marker with accuracy circle
+          if (drawnItemsRef.current) {
+            drawnItemsRef.current.clearLayers();
+            
+            // Add marker at current position
+            const marker = L.marker([latitude, longitude], {
+              title: 'Your Location',
+              icon: L.divIcon({
+                className: 'gps-marker',
+                html: `<div class="w-4 h-4 bg-blue-500 rounded-full border-2 border-white shadow-lg"></div>`,
+                iconSize: [16, 16],
+                iconAnchor: [8, 8]
+              })
+            });
+
+            // Add accuracy circle
+            const accuracyCircle = L.circle([latitude, longitude], {
+              radius: accuracy,
+              color: '#3388ff',
+              fillColor: '#3388ff',
+              fillOpacity: 0.1,
+              weight: 1
+            });
+
+            drawnItemsRef.current.addLayer(marker);
+            drawnItemsRef.current.addLayer(accuracyCircle);
+          }
+        }
+
+        setGpsStatus('found');
+      },
+      (error) => {
+        let errorMessage = "Failed to get location";
+        switch (error.code) {
+          case error.PERMISSION_DENIED:
+            errorMessage = "Please allow GPS access to use this feature";
+            break;
+          case error.POSITION_UNAVAILABLE:
+            errorMessage = "Location information unavailable";
+            break;
+          case error.TIMEOUT:
+            errorMessage = "Location request timed out";
+            break;
+        }
+        setLocationError(errorMessage);
+        setGpsStatus('error');
+      },
+      options
+    );
+
+    // Watch for continuous updates
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const { latitude, longitude, accuracy } = position.coords;
+        
+        if (mapRef.current && drawnItemsRef.current) {
+          drawnItemsRef.current.eachLayer((layer: any) => {
+            if (layer instanceof L.Marker) {
+              layer.setLatLng([latitude, longitude]);
+            }
+            if (layer instanceof L.Circle) {
+              layer.setLatLng([latitude, longitude]);
+              layer.setRadius(accuracy);
+            }
+          });
+        }
+      },
+      null,
+      options
+    );
+
+    // Cleanup watch on component unmount
+    return () => {
+      navigator.geolocation.clearWatch(watchId);
+    };
+  };
+
+  // Add this CSS to your styles
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      .gps-marker {
+        animation: pulse 2s infinite;
+      }
+      @keyframes pulse {
+        0% { transform: scale(1); opacity: 1; }
+        50% { transform: scale(1.2); opacity: 0.8; }
+        100% { transform: scale(1); opacity: 1; }
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
+
+  // Undo/Redo functions
+  const handleUndo = () => {
+    if (undoStack.length > 0) {
+      const lastPolygon = undoStack[undoStack.length - 1];
+      setUndoStack(prev => prev.slice(0, -1));
+      setRedoStack(prev => [...prev, lastPolygon]);
+      
+      if (drawnItemsRef.current) {
+        drawnItemsRef.current.clearLayers();
+        if (undoStack.length > 1) {
+          const polygon = L.polygon(undoStack[undoStack.length - 2]);
+          drawnItemsRef.current.addLayer(polygon);
+          updateAreaSize();
+        }
+      }
+    }
+  };
+
+  const handleRedo = () => {
+    if (redoStack.length > 0) {
+      const nextPolygon = redoStack[redoStack.length - 1];
+      setRedoStack(prev => prev.slice(0, -1));
+      setUndoStack(prev => [...prev, nextPolygon]);
+      
+      if (drawnItemsRef.current) {
+        drawnItemsRef.current.clearLayers();
+        const polygon = L.polygon(nextPolygon);
+        drawnItemsRef.current.addLayer(polygon);
+        updateAreaSize();
+      }
+    }
+  };
+
+  // Save measurement data
+  const saveMeasurement = async () => {
+    if (!drawnItemsRef.current) return;
+
+    const measurementData = {
+      area: areaSize,
+      unit: selectedUnit,
+      coordinates: drawnItemsRef.current.getLayers().map((layer: any) => 
+        layer.getLatLngs()[0].map((latlng: L.LatLng) => ({
+          lat: latlng.lat,
+          lng: latlng.lng
+        }))
+      ),
+      timestamp: new Date().toISOString()
+    };
+
+    try {
+      // Here you can implement your save logic
+      // Example: Save to localStorage
+      const savedMeasurements = JSON.parse(localStorage.getItem('measurements') || '[]');
+      savedMeasurements.push(measurementData);
+      localStorage.setItem('measurements', JSON.stringify(savedMeasurements));
+      
+      alert('Measurement saved successfully!');
+    } catch (error) {
+      console.error('Error saving measurement:', error);
+      alert('Failed to save measurement');
+    }
+  };
+
   return (
     <div className="relative w-full h-screen flex flex-col">
       {/* Search Bar - Responsive positioning */}
@@ -224,7 +435,9 @@ const Map: React.FC<MapProps> = () => {
 
       {/* Drawing Tools Panel */}
       <div className="absolute z-[1000] left-4 top-4 bg-white rounded-lg shadow-lg p-4">
-       
+        <div className="text-center mb-4 font-semibold text-gray-700">
+          Field Measurement
+        </div>
         <div className="flex flex-col gap-3">
           <button
             className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
@@ -236,12 +449,96 @@ const Map: React.FC<MapProps> = () => {
             <span>Draw Field</span>
           </button>
           
+          <div className="flex gap-2">
+            <button
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200"
+              onClick={handleUndo}
+              disabled={undoStack.length === 0}
+            >
+              <FaUndo size={16} />
+            </button>
+            <button
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200"
+              onClick={handleRedo}
+              disabled={redoStack.length === 0}
+            >
+              <FaRedo size={16} />
+            </button>
+          </div>
+
+          <button
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
+              gpsStatus === 'searching' 
+                ? 'bg-yellow-100 text-yellow-800' 
+                : gpsStatus === 'found'
+                ? 'bg-green-100 text-green-800'
+                : gpsStatus === 'error'
+                ? 'bg-red-100 text-red-800'
+                : 'bg-gray-100 hover:bg-gray-200'
+            }`}
+            onClick={getCurrentLocation}
+            disabled={gpsStatus === 'searching'}
+          >
+            {gpsStatus === 'searching' ? (
+              <MdGpsNotFixed className="animate-spin" size={16} />
+            ) : (
+              <MdGpsFixed size={16} />
+            )}
+            <span>
+              {gpsStatus === 'searching' 
+                ? 'Getting Location...' 
+                : gpsStatus === 'found'
+                ? 'Location Found'
+                : 'My Location'}
+            </span>
+          </button>
+
+          {locationError && (
+            <div className="mt-2 text-sm text-red-600 bg-red-50 p-2 rounded">
+              {locationError}
+            </div>
+          )}
+
+          <select
+            className="px-4 py-2 rounded-lg border border-gray-200"
+            value={selectedUnit}
+            onChange={(e) => {
+              setSelectedUnit(e.target.value as MeasurementUnit);
+              updateAreaSize();
+            }}
+          >
+            <option value="ha">Hectares</option>
+            <option value="sqm">Square Meters</option>
+            <option value="acre">Acres</option>
+            <option value="sqft">Square Feet</option>
+          </select>
+
+          <select
+            className="px-4 py-2 rounded-lg border border-gray-200"
+            value={mapLayer}
+            onChange={(e) => setMapLayer(e.target.value as 'satellite' | 'terrain' | 'street')}
+          >
+            <option value="satellite">Satellite</option>
+            <option value="terrain">Terrain</option>
+            <option value="street">Street</option>
+          </select>
+
+          <button
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-green-500 text-white hover:bg-green-600"
+            onClick={saveMeasurement}
+          >
+            <FaSave size={16} />
+            <span>Save</span>
+          </button>
+
           <button
             className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200"
             onClick={() => {
               if (drawnItemsRef.current) {
                 drawnItemsRef.current.clearLayers();
                 setAreaSize('0');
+                setUndoStack([]);
+                setRedoStack([]);
               }
             }}
           >
@@ -255,7 +552,7 @@ const Map: React.FC<MapProps> = () => {
               <span>Area Size</span>
             </div>
             <div className="text-lg font-semibold text-blue-600">
-              {areaSize} ha
+              {areaSize} {selectedUnit}
             </div>
           </div>
         </div>
