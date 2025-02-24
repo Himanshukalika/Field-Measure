@@ -11,19 +11,31 @@ export default async function handler(
   try {
     const { points, apiKey } = req.body;
 
-    // Call Google Maps Elevation API
-    const response = await fetch(
-      `https://maps.googleapis.com/maps/api/elevation/json?locations=${
-        points.map((p: { lat: number; lng: number }) => `${p.lat},${p.lng}`).join('|')
-      }&key=${apiKey}`
-    );
+    if (!points || !Array.isArray(points) || points.length === 0) {
+      return res.status(400).json({ message: 'Invalid points data' });
+    }
 
+    if (!apiKey) {
+      return res.status(400).json({ message: 'API key is required' });
+    }
+
+    // Format points for Google API
+    const locations = points.map(p => `${p.lat},${p.lng}`).join('|');
+    
+    // Call Google Maps Elevation API
+    const url = `https://maps.googleapis.com/maps/api/elevation/json?locations=${locations}&key=${apiKey}`;
+    
+    const response = await fetch(url);
     const data = await response.json();
 
-    if (data.status === 'OK') {
+    if (data.status === 'OK' && data.results) {
       return res.status(200).json(data);
     } else {
-      throw new Error(data.error_message || 'Failed to get elevation data');
+      console.error('Google API Error:', data);
+      return res.status(500).json({ 
+        message: 'Failed to get elevation data',
+        error: data.error_message || 'Unknown error'
+      });
     }
 
   } catch (error) {

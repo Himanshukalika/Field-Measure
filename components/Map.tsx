@@ -6,6 +6,7 @@ import { FaSearch, FaPen, FaTrash, FaRuler, FaUndo, FaRedo, FaSave, FaLayerGroup
 import { MdGpsFixed, MdGpsNotFixed } from 'react-icons/md';
 import { Chart } from 'react-chartjs-2';
 import { Chart as ChartJS } from 'chart.js/auto';
+import { interpolateColor } from '../utils/colorUtils';
 
 
 // Import leaflet-draw properly
@@ -202,6 +203,7 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [selectedLayer, setSelectedLayer] = useState('streets');
   const [points, setPoints] = useState<L.LatLng[]>([]);
+  const [distanceMarkers, setDistanceMarkers] = useState<L.Layer[]>([]);
 
   // Add layers configuration
   const mapLayers = {
@@ -233,29 +235,56 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
     setSelectedLayer(layer);
   };
 
-  // Update map click handler to support undo/redo
+  // Set initial corner count to 1 when component mounts
+  useEffect(() => {
+    const cornerCount = document.querySelector('.corner-count');
+    if (cornerCount) {
+      cornerCount.textContent = '1';
+    }
+  }, []);
+
   const handleMapClick = useCallback((e: L.LeafletMouseEvent) => {
     if (!isDrawing) return;
 
     const newPoint = e.latlng;
-    setPoints(prev => [...prev, newPoint]);
+    const newPoints = [...points, newPoint];
+    setPoints(newPoints);
     setUndoStack(prev => [...prev, newPoint]);
-    setRedoStack([]); // Clear redo stack on new point
+    setRedoStack([]);
 
     const layers = drawnItemsRef.current?.getLayers() || [];
     if (layers.length === 0) {
-      // Start new polygon
       L.polygon([newPoint], {
         color: '#3388ff',
         fillOpacity: 0.2,
       }).addTo(drawnItemsRef.current!);
+      
+      // First point = first corner
+      const cornerCount = document.querySelector('.corner-count');
+      if (cornerCount) {
+        cornerCount.textContent = '1';
+      }
     } else {
-      // Update existing polygon
-      const polygon = layers[0] as L.Polygon;
-      const latlngs = [...points, newPoint];
-      polygon.setLatLngs(latlngs);
-      updateAreaSize(L.GeometryUtil.geodesicArea(latlngs));
+      const polygon = layers[layers.length - 1] as L.Polygon;
+      polygon.setLatLngs(newPoints);
+      if (newPoints.length > 2) {
+        updateAreaSize(L.GeometryUtil.geodesicArea(newPoints));
+        // Count actual corners including auto-connected ones
+        const cornerCount = document.querySelector('.corner-count');
+        if (cornerCount) {
+          // Add 2 to include both auto-connected corners
+          cornerCount.textContent = String(newPoints.length + 2);
+        }
+      } else {
+        // For second point
+        const cornerCount = document.querySelector('.corner-count');
+        if (cornerCount) {
+          cornerCount.textContent = '2';
+        }
+      }
     }
+
+    updateDistanceMarkers(newPoints);
   }, [isDrawing, points]);
 
   // Undo function
@@ -273,6 +302,9 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
       polygon.setLatLngs(newPoints);
       updateAreaSize(newPoints.length > 2 ? L.GeometryUtil.geodesicArea(newPoints) : 0);
     }
+
+    // Update distance markers with new points
+    updateDistanceMarkers(newPoints);
   };
 
   // Redo function
@@ -761,6 +793,7 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
     }));
   };
 
+  // Update analyzeElevation function with better error handling
   const analyzeElevation = async () => {
     if (!drawnItemsRef.current) return;
     
@@ -772,74 +805,123 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
         return;
       }
 
+      if (!apiKey) {
+        throw new Error('Google Maps API key is missing');
+      }
+
       const polygon = layers[layers.length - 1] as L.Polygon;
       const bounds = polygon.getBounds();
       const points = polygon.getLatLngs()[0] as L.LatLng[];
 
-      // Create grid points
-      const gridPoints = createAnalysisGrid(bounds, points as L.LatLng[], 20);
+      // Create grid points with reduced density
+      const gridPoints = createAnalysisGrid(bounds, points as L.LatLng[], 5);
 
-      // Get real elevation data instead of mock data
-      const elevationData = await getElevationData(gridPoints);
+      // Split points into smaller chunks
+      const chunkSize = 100; // Reduced chunk size
+      const allElevationData = [];
+      
+      for (let i = 0; i < gridPoints.length; i += chunkSize) {
+        const chunk = gridPoints.slice(i, i + chunkSize);
+        
+        const response = await fetch('/api/elevation', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            points: chunk.map(p => ({ lat: p.lat, lng: p.lng })),
+            apiKey
+          })
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(errorData.message || 'Failed to fetch elevation data');
+        }
+
+        const data = await response.json();
+        
+        if (!data.results || !Array.isArray(data.results)) {
+          throw new Error('Invalid elevation data format');
+        }
+
+        const chunkElevationData = data.results.map((result: any, index: number) => ({
+          elevation: result.elevation,
+          location: chunk[index]
+        }));
+
+        allElevationData.push(...chunkElevationData);
+
+        // Add a small delay between chunks to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+
+      if (allElevationData.length === 0) {
+        throw new Error('No elevation data received');
+      }
 
       // Calculate statistics
-      const elevations = elevationData.map(point => point.elevation);
+      const elevations = allElevationData.map(point => point.elevation);
       const min = Math.min(...elevations);
       const max = Math.max(...elevations);
-      
-      // Calculate slopes
-      const slopes = calculateSlopes(elevationData, gridPoints);
-      const avgSlope = slopes.reduce((a, b) => a + b, 0) / slopes.length;
 
       // Remove existing elevation overlay
       if (drawnItemsRef.current) {
         drawnItemsRef.current.eachLayer((layer) => {
           if ((layer as any).isElevationOverlay) {
-            layer.remove();
+            drawnItemsRef.current?.removeLayer(layer);
           }
         });
       }
 
       // Create elevation visualization
-      elevationData.forEach((data, index) => {
+      allElevationData.forEach((data, index) => {
         if (index < gridPoints.length - 1) {
-          try {
-            const color = getElevationColor(data.elevation, min, max);
-            const cell = L.polygon([
-              data.location,
-              gridPoints[index + 1],
-              gridPoints[Math.min(index + 21, gridPoints.length - 1)],
-              gridPoints[Math.min(index + 20, gridPoints.length - 1)]
-            ], {
-              color: color,
-              fillColor: color,
-              fillOpacity: 0.6,
-              weight: 0,
-              className: 'elevation-cell'
-            });
-            
-            (cell as any).isElevationOverlay = true;
-            cell.bindPopup(`Elevation: ${data.elevation.toFixed(1)}m`);
-            drawnItemsRef.current?.addLayer(cell);
-          } catch (error) {
-            console.error('Error creating elevation cell:', error);
-          }
+          const ratio = (data.elevation - min) / (max - min);
+          const color = interpolateColor('#2b83ba', '#d7191c', ratio);
+          
+          const cell = L.polygon([
+            data.location,
+            gridPoints[index + 1],
+            gridPoints[Math.min(index + 11, gridPoints.length - 1)],
+            gridPoints[Math.min(index + 10, gridPoints.length - 1)]
+          ], {
+            color: color,
+            fillColor: color,
+            fillOpacity: 0.6,
+            weight: 0,
+            className: 'elevation-cell'
+          });
+          
+          (cell as any).isElevationOverlay = true;
+          cell.bindPopup(`
+            <div class="text-sm">
+              <strong>Elevation:</strong> ${data.elevation.toFixed(1)}m<br>
+              <strong>Location:</strong> ${data.location.lat.toFixed(6)}, ${data.location.lng.toFixed(6)}
+            </div>
+          `);
+          drawnItemsRef.current?.addLayer(cell);
         }
       });
 
-      // Add elevation legend
+      // Add enhanced legend
       const legend = L.control({ position: 'bottomright' });
       legend.onAdd = () => {
         const div = L.DomUtil.create('div', 'elevation-legend');
         div.innerHTML = `
-          <div style="background: white; padding: 10px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
-            <h4 style="margin: 0 0 5px 0;">Elevation (m)</h4>
-            <div style="display: flex; align-items: center; gap: 5px;">
-              <div style="background: linear-gradient(to top, #2b83ba, #abdda4, #ffffbf, #fdae61, #d7191c); width: 20px; height: 100px;"></div>
-              <div style="display: flex; flex-direction: column; justify-content: space-between; height: 100px;">
-                <span>${max.toFixed(0)}m</span>
-                <span>${min.toFixed(0)}m</span>
+          <div class="bg-white p-3 rounded-lg shadow-lg">
+            <div class="text-sm font-medium mb-2">Elevation Analysis</div>
+            <div class="flex items-center gap-2 mb-2">
+              <div class="w-24 h-4 bg-gradient-to-r from-[#2b83ba] to-[#d7191c]"></div>
+              <div class="flex justify-between w-full text-xs">
+                <span>${min.toFixed(1)}m</span>
+                <span>${max.toFixed(1)}m</span>
               </div>
+            </div>
+            <div class="text-xs space-y-1">
+              <div>Elevation Range: ${(max - min).toFixed(1)}m</div>
+              <div>Average: ${(elevations.reduce((a, b) => a + b, 0) / elevations.length).toFixed(1)}m</div>
+              <div>Slope: ${((max - min) / (bounds.getNorth() - bounds.getSouth()) * 100).toFixed(1)}%</div>
             </div>
           </div>
         `;
@@ -847,55 +929,33 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
       };
       legend.addTo(mapRef.current!);
 
-      setElevationData({
-        elevation: elevations[0],
-        slope: slopes[0],
-        min: Number(min.toFixed(2)),
-        max: Number(max.toFixed(2)),
-        avgSlope: Number(avgSlope.toFixed(2))
-      });
-      setShowElevationAnalysis(true);
-
     } catch (error) {
       console.error('Elevation analysis failed:', error);
-      alert('Failed to analyze elevation. Please try again.');
+      alert(`Failed to analyze elevation: ${error.message}. Please check your API key and try again.`);
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  // Helper function to create analysis grid
-  const createAnalysisGrid = (bounds: L.LatLngBounds, polygon: L.LatLng[], resolution: number) => {
-    const points: L.LatLng[] = [];
-    const latStep = (bounds.getNorth() - bounds.getSouth()) / resolution;
-    const lngStep = (bounds.getEast() - bounds.getWest()) / resolution;
-
+  // Add helper function for grid creation
+  const createAnalysisGrid = (bounds: L.LatLngBounds, points: L.LatLng[], density: number) => {
+    const gridPoints: L.LatLng[] = [];
+    const latStep = (bounds.getNorth() - bounds.getSouth()) / density;
+    const lngStep = (bounds.getEast() - bounds.getWest()) / density;
+    
     for (let lat = bounds.getSouth(); lat <= bounds.getNorth(); lat += latStep) {
       for (let lng = bounds.getWest(); lng <= bounds.getEast(); lng += lngStep) {
         const point = L.latLng(lat, lng);
-        if (isPointInPolygon(point, polygon)) {
-          points.push(point);
+        if (isPointInPolygon(point, points)) {
+          gridPoints.push(point);
         }
       }
     }
-
-    return points;
+    
+    return gridPoints;
   };
 
-  // Helper function to calculate slopes
-  const calculateSlopes = (elevationData: any[], points: L.LatLng[]) => {
-    const slopes: number[] = [];
-    for (let i = 0; i < elevationData.length - 1; i++) {
-      const elevation1 = elevationData[i].elevation;
-      const elevation2 = elevationData[i + 1].elevation;
-      const distance = points[i].distanceTo(points[i + 1]);
-      const slope = Math.abs((elevation2 - elevation1) / distance) * 100; // in percentage
-      slopes.push(slope);
-    }
-    return slopes;
-  };
-
-  // Fixed isPointInPolygon function
+  // Add helper function for point in polygon check
   const isPointInPolygon = (point: L.LatLng, polygon: L.LatLng[]): boolean => {
     let inside = false;
     for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
@@ -906,7 +966,7 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
 
       const intersect = ((yi > point.lng) !== (yj > point.lng)) &&
         (point.lat < (xj - xi) * (point.lng - yi) / (yj - yi) + xi);
-
+      
       if (intersect) inside = !inside;
     }
     return inside;
@@ -932,7 +992,125 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
       }
       setIsEditing(false);
     }
-    setIsDrawing(!isDrawing);
+
+    const newIsDrawing = !isDrawing;
+    setIsDrawing(newIsDrawing);
+
+    // Reset corner count to 1 when starting new drawing
+    if (newIsDrawing) {
+      const cornerCount = document.querySelector('.corner-count');
+      if (cornerCount) {
+        cornerCount.textContent = '1';
+      }
+      setPoints([]);
+      distanceMarkers.forEach(marker => {
+        mapRef.current?.removeLayer(marker);
+      });
+      setDistanceMarkers([]);
+    }
+  };
+
+  const updateDistanceMarkers = (points: L.LatLng[]) => {
+    // Clear existing distance markers
+    distanceMarkers.forEach(marker => {
+      mapRef.current?.removeLayer(marker);
+    });
+    setDistanceMarkers([]);
+
+    if (points.length < 2) return;
+
+    const newMarkers: L.Layer[] = [];
+
+    // Add distance markers between consecutive points
+    for (let i = 0; i < points.length; i++) {
+      const p1 = points[i];
+      const p2 = points[i + 1] || points[0]; // Use first point if at end
+      
+      // Calculate midpoint for marker placement
+      const midPoint = L.latLng(
+        (p1.lat + p2.lat) / 2,
+        (p1.lng + p2.lng) / 2
+      );
+
+      // Calculate distance in meters
+      const distance = p1.distanceTo(p2);
+      
+      // Format distance
+      const formattedDistance = distance >= 1000 
+        ? `${(distance / 1000).toFixed(2)} km`
+        : `${Math.round(distance)} m`;
+
+      // Create marker with distance label
+      const marker = L.marker(midPoint, {
+        icon: L.divIcon({
+          className: 'distance-marker',
+          html: `<div class="bg-white px-2 py-1 rounded-md shadow text-xs font-medium">
+                  ${formattedDistance}
+                </div>`,
+          iconSize: [50, 20],
+          iconAnchor: [25, 10]
+        })
+      }).addTo(mapRef.current!);
+
+      newMarkers.push(marker);
+    }
+
+    // Update corner count to match number of distance measurements
+    const cornerCount = document.querySelector('.corner-count');
+    if (cornerCount && newMarkers.length > 0) {
+      cornerCount.textContent = String(newMarkers.length);
+    }
+
+    setDistanceMarkers(newMarkers);
+  };
+
+  // Add styles for distance markers
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      .distance-marker {
+        background: none;
+        border: none;
+      }
+      .distance-marker > div {
+        white-space: nowrap;
+        color: #1f2937;
+        border: 1px solid #e5e7eb;
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
+
+  const handleDelete = () => {
+    if (drawnItemsRef.current) {
+      // Clear all polygon layers
+      drawnItemsRef.current.clearLayers();
+      
+      // Clear all vertex markers and distance markers
+      if (mapRef.current) {
+        mapRef.current.eachLayer((layer) => {
+          if (layer instanceof L.Marker) {
+            mapRef.current?.removeLayer(layer);
+          }
+        });
+      }
+      
+      // Reset all states
+      setPoints([]);
+      setUndoStack([]);
+      setRedoStack([]);
+      setDistanceMarkers([]);
+      updateAreaSize(0);
+
+      // Reset corner count
+      const cornerCount = document.querySelector('.corner-count');
+      if (cornerCount) {
+        cornerCount.textContent = '0';
+      }
+    }
   };
 
   return (
@@ -1101,17 +1279,24 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
             {/* Layers Button */}
             <button
               className="flex items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-lg bg-gray-50 hover:bg-gray-100 transition-all duration-200"
-              onClick={() => {
-                if (drawnItemsRef.current) {
-                  drawnItemsRef.current.clearLayers();
-                  setAreaSize('0');
-                  setUndoStack([]);
-                  setRedoStack([]);
-                }
-              }}
+              onClick={handleDelete}
               title="Clear All"
             >
               <FaTrash size={18} />
+            </button>
+
+            {/* Elevation Analysis Button */}
+            <button
+              className={`flex items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-lg transition-all duration-200 ${
+                isAnalyzing ? 'bg-blue-500 text-white' : 'bg-gray-50 hover:bg-gray-100'
+              }`}
+              onClick={analyzeElevation}
+              disabled={isAnalyzing}
+              title="Analyze Elevation"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M12 3.5l4 4v9.5H4V7.5l4-4h4zm-2 1.5v3h2V5h-2z" clipRule="evenodd" />
+              </svg>
             </button>
           </div>
         </div>
