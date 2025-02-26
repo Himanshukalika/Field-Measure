@@ -171,6 +171,17 @@ const getBoundaryStyle = (boundaryType: string, confidence: number): BoundarySty
   }
 };
 
+interface Vertex {
+  lat: number;
+  lng: number;
+}
+
+interface FieldBoundary {
+  vertices: Vertex[];
+  area: number;
+  perimeter: number;
+}
+
 const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -204,6 +215,11 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
   const [selectedLayer, setSelectedLayer] = useState('streets');
   const [points, setPoints] = useState<L.LatLng[]>([]);
   const [distanceMarkers, setDistanceMarkers] = useState<L.Layer[]>([]);
+  const [boundary, setBoundary] = useState<FieldBoundary>({
+    vertices: [],
+    area: 0,
+    perimeter: 0
+  });
 
   // Add layers configuration
   const mapLayers = {
@@ -257,9 +273,12 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
       L.polygon([newPoint], {
         color: '#3388ff',
         fillOpacity: 0.2,
+        smoothFactor: 5,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'rounded-polygon'
       }).addTo(drawnItemsRef.current!);
       
-      // First point = first corner
       const cornerCount = document.querySelector('.corner-count');
       if (cornerCount) {
         cornerCount.textContent = '1';
@@ -267,16 +286,20 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
     } else {
       const polygon = layers[layers.length - 1] as L.Polygon;
       polygon.setLatLngs(newPoints);
+      polygon.setStyle({
+        smoothFactor: 5,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'rounded-polygon'
+      });
+      
       if (newPoints.length > 2) {
         updateAreaSize(L.GeometryUtil.geodesicArea(newPoints));
-        // Count actual corners including auto-connected ones
         const cornerCount = document.querySelector('.corner-count');
         if (cornerCount) {
-          // Add 2 to include both auto-connected corners
           cornerCount.textContent = String(newPoints.length + 2);
         }
       } else {
-        // For second point
         const cornerCount = document.querySelector('.corner-count');
         if (cornerCount) {
           cornerCount.textContent = '2';
@@ -440,7 +463,6 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
   const startDrawing = () => {
     if (!mapRef.current) return;
     
-    // If already drawing, disable it
     if (isDrawing && drawHandler) {
       drawHandler.disable();
       setDrawHandler(null);
@@ -448,7 +470,6 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
       return;
     }
 
-    // Start new drawing
     const polygonDrawHandler = new (L as any).Draw.Polygon(mapRef.current, {
       showArea: true,
       shapeOptions: {
@@ -456,7 +477,11 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
         fillColor: '#3388ff',
         fillOpacity: 0.2,
         weight: 3,
-        opacity: 0.8
+        opacity: 0.8,
+        smoothFactor: 5,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'rounded-polygon'
       },
       touchIcon: new L.DivIcon({
         className: 'leaflet-div-icon',
@@ -657,13 +682,16 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
   const handleDrawCreated = (e: any) => {
     const layer = e.layer;
     if (drawnItemsRef.current) {
-      drawnItemsRef.current.addLayer(layer);
+      layer.setStyle({
+        smoothFactor: 5,
+        lineCap: 'round',
+        lineJoin: 'round',
+        className: 'rounded-polygon'
+      });
       
-      // Save to undo stack with correct typing
+      drawnItemsRef.current.addLayer(layer);
       setUndoStack(prev => [...prev, layer.getLatLngs()[0] as L.LatLng]);
       setRedoStack([]);
-
-      // Update area calculation
       updateAreaSize(L.GeometryUtil.geodesicArea(layer.getLatLngs()[0] as L.LatLng[]));
     }
   };
@@ -1111,6 +1139,52 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
         cornerCount.textContent = '0';
       }
     }
+  };
+
+  // Add CSS styles for increased radius
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      .rounded-polygon {
+        stroke-linejoin: round;
+        stroke-linecap: round;
+        border-radius: 15px;  /* Increased border radius */
+      }
+      .rounded-polygon path {
+        stroke-linejoin: round;
+        stroke-linecap: round;
+      }
+    `;
+    document.head.appendChild(style);
+    
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
+
+  // Vertex को drag करने के लिए handler
+  const handleVertexDrag = (index: number, newPosition: Vertex) => {
+    setBoundary(prev => {
+      const newVertices = [...prev.vertices];
+      newVertices[index] = newPosition;
+      return {
+        ...prev,
+        vertices: newVertices
+      };
+    });
+  };
+
+  // Edge के middle point को drag करने के लिए handler
+  const handleEdgeDrag = (index: number, newPosition: Vertex) => {
+    setBoundary(prev => {
+      const newVertices = [...prev.vertices];
+      // नया vertex add करें edges के बीच में
+      newVertices.splice(index + 1, 0, newPosition);
+      return {
+        ...prev,
+        vertices: newVertices
+      };
+    });
   };
 
   return (
