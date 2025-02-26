@@ -220,6 +220,7 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
     area: 0,
     perimeter: 0
   });
+  const [vertexMarkers, setVertexMarkers] = useState<L.CircleMarker[]>([]);
 
   // Add layers configuration
   const mapLayers = {
@@ -307,6 +308,8 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
       }
     }
 
+    // Update markers with draggable functionality
+    addVertexMarkers(newPoints);
     updateDistanceMarkers(newPoints);
   }, [isDrawing, points]);
 
@@ -326,7 +329,8 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
       updateAreaSize(newPoints.length > 2 ? L.GeometryUtil.geodesicArea(newPoints) : 0);
     }
 
-    // Update distance markers with new points
+    // Update markers with draggable functionality
+    addVertexMarkers(newPoints);
     updateDistanceMarkers(newPoints);
   };
 
@@ -345,6 +349,9 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
       const newPoints = [...points, point];
       polygon.setLatLngs(newPoints);
       updateAreaSize(L.GeometryUtil.geodesicArea(newPoints));
+      
+      // Update markers with draggable functionality
+      addVertexMarkers(newPoints);
     }
   };
 
@@ -1114,10 +1121,15 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
 
   const handleDelete = () => {
     if (drawnItemsRef.current) {
-      // Clear all polygon layers
       drawnItemsRef.current.clearLayers();
       
-      // Clear all vertex markers and distance markers
+      // Clear vertex markers
+      vertexMarkers.forEach(marker => {
+        mapRef.current?.removeLayer(marker);
+      });
+      setVertexMarkers([]);
+      
+      // Clear all other markers and states
       if (mapRef.current) {
         mapRef.current.eachLayer((layer) => {
           if (layer instanceof L.Marker) {
@@ -1126,14 +1138,12 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
         });
       }
       
-      // Reset all states
       setPoints([]);
       setUndoStack([]);
       setRedoStack([]);
       setDistanceMarkers([]);
       updateAreaSize(0);
 
-      // Reset corner count
       const cornerCount = document.querySelector('.corner-count');
       if (cornerCount) {
         cornerCount.textContent = '0';
@@ -1186,6 +1196,86 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
       };
     });
   };
+
+  // Update the vertex marker creation to make them draggable
+  const addVertexMarkers = (points: L.LatLng[]) => {
+    // Remove existing vertex markers
+    vertexMarkers.forEach(marker => {
+      mapRef.current?.removeLayer(marker);
+    });
+
+    // Create new draggable vertex markers
+    const newMarkers = points.map((point, index) => {
+      const marker = L.circleMarker(point, {
+        radius: 6,
+        fillColor: '#ffffff',
+        color: '#3388ff',
+        weight: 2,
+        opacity: 1,
+        fillOpacity: 1,
+        className: 'vertex-marker',
+        // Enable interaction for dragging
+        interactive: true,
+        draggable: true,
+        bubblingMouseEvents: false
+      }).addTo(mapRef.current!);
+
+      // Add drag events
+      marker.on('dragstart', () => {
+        marker.setStyle({ fillColor: '#ff3333' }); // Red color while dragging
+      });
+
+      marker.on('drag', (e) => {
+        const newLatLng = e.target.getLatLng();
+        const newPoints = [...points];
+        newPoints[index] = newLatLng;
+        
+        // Update polygon vertices
+        const layers = drawnItemsRef.current?.getLayers() || [];
+        if (layers.length > 0) {
+          const polygon = layers[0] as L.Polygon;
+          polygon.setLatLngs(newPoints);
+          updateAreaSize(L.GeometryUtil.geodesicArea(newPoints));
+        }
+        
+        // Update distance markers
+        updateDistanceMarkers(newPoints);
+        setPoints(newPoints);
+      });
+
+      marker.on('dragend', () => {
+        marker.setStyle({ fillColor: '#ffffff' }); // Reset color
+      });
+      
+      return marker;
+    });
+
+    setVertexMarkers(newMarkers);
+  };
+
+  // Update CSS styles to show draggable cursor
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      .vertex-marker {
+        cursor: move !important;
+        transition: fill-color 0.2s;
+      }
+      
+      .vertex-marker:hover {
+        cursor: move !important;
+      }
+      
+      .vertex-marker.dragging {
+        cursor: grabbing !important;
+      }
+    `;
+    document.head.appendChild(style);
+    
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
 
   return (
     <div className="absolute inset-0">
