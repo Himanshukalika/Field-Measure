@@ -18,6 +18,7 @@ if (typeof window !== 'undefined') {
 declare module 'leaflet' {
   namespace GeometryUtil {
     function geodesicArea(latLngs: L.LatLng[]): number;
+    function distanceSegment(map: L.Map, point: L.LatLng, p1: L.LatLng, p2: L.LatLng): number;
   }
 
   interface DrawOptions {
@@ -221,6 +222,7 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
     perimeter: 0
   });
   const [vertexMarkers, setVertexMarkers] = useState<L.CircleMarker[]>([]);
+  const [isEditingVertices, setIsEditingVertices] = useState(false);
 
   // Add layers configuration
   const mapLayers = {
@@ -1045,79 +1047,78 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
     }
   };
 
-  const updateDistanceMarkers = (points: L.LatLng[]) => {
-    // Clear existing distance markers
+  const clearAllDistanceMarkers = () => {
+    if (!mapRef.current) return;
+    
+    // Remove all markers with distance-marker class
+    mapRef.current.eachLayer((layer) => {
+      if (layer instanceof L.Marker) {
+        const element = layer.getElement();
+        if (element && element.classList.contains('distance-marker')) {
+          mapRef.current?.removeLayer(layer);
+        }
+      }
+    });
+    
+    // Also clear from our state
     distanceMarkers.forEach(marker => {
-      mapRef.current?.removeLayer(marker);
+      if (mapRef.current) {
+        mapRef.current.removeLayer(marker);
+      }
     });
     setDistanceMarkers([]);
+  };
 
+  const updateDistanceMarkers = (points: L.LatLng[]) => {
+    clearAllDistanceMarkers();
     if (points.length < 2) return;
 
     const newMarkers: L.Layer[] = [];
 
-    // Add distance markers between consecutive points
     for (let i = 0; i < points.length; i++) {
       const p1 = points[i];
-      const p2 = points[i + 1] || points[0]; // Use first point if at end
+      const p2 = points[(i + 1) % points.length];
+
+      // Calculate midpoint
+      const midPoint = L.latLng((p1.lat + p2.lat) / 2, (p1.lng + p2.lng) / 2);
+
+      // Calculate angle between points (for edge direction)
+      const angle = Math.atan2(p2.lng - p1.lng, p2.lat - p1.lat);
       
-      // Calculate midpoint for marker placement
-      const midPoint = L.latLng(
-        (p1.lat + p2.lat) / 2,
-        (p1.lng + p2.lng) / 2
+      // Adjust label positioning perpendicular to the edge
+      const offsetDistance = 0.0002; // Adjust this for spacing
+      const labelPoint = L.latLng(
+        midPoint.lat + offsetDistance * Math.sin(angle),
+        midPoint.lng - offsetDistance * Math.cos(angle)
       );
 
-      // Calculate distance in meters
+      // Calculate the distance between points
       const distance = p1.distanceTo(p2);
-      
-      // Format distance
       const formattedDistance = distance >= 1000 
         ? `${(distance / 1000).toFixed(2)} km`
         : `${Math.round(distance)} m`;
 
-      // Create marker with distance label
-      const marker = L.marker(midPoint, {
+      // Create the rotated label
+      const marker = L.marker(labelPoint, {
         icon: L.divIcon({
           className: 'distance-marker',
-          html: `<div class="bg-white px-2 py-1 rounded-md shadow text-xs font-medium">
+          html: `<div class="distance-label" style="transform: rotate(${90 - angle * (180 / Math.PI)}deg)">
                   ${formattedDistance}
                 </div>`,
-          iconSize: [50, 20],
-          iconAnchor: [25, 10]
-        })
-      }).addTo(mapRef.current!);
+          iconSize: [80, 20],
+          iconAnchor: [40, 10]
+        }),
+        interactive: false
+      });
 
-      newMarkers.push(marker);
-    }
-
-    // Update corner count to match number of distance measurements
-    const cornerCount = document.querySelector('.corner-count');
-    if (cornerCount && newMarkers.length > 0) {
-      cornerCount.textContent = String(newMarkers.length);
+      if (mapRef.current) {
+        marker.addTo(mapRef.current);
+        newMarkers.push(marker);
+      }
     }
 
     setDistanceMarkers(newMarkers);
   };
-
-  // Add styles for distance markers
-  useEffect(() => {
-    const style = document.createElement('style');
-    style.textContent = `
-      .distance-marker {
-        background: none;
-        border: none;
-      }
-      .distance-marker > div {
-        white-space: nowrap;
-        color: #1f2937;
-        border: 1px solid #e5e7eb;
-      }
-    `;
-    document.head.appendChild(style);
-    return () => {
-      document.head.removeChild(style);
-    };
-  }, []);
 
   const handleDelete = () => {
     if (drawnItemsRef.current) {
@@ -1272,6 +1273,385 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
     `;
     document.head.appendChild(style);
     
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
+
+  // Add new function to enable vertex editing
+  const enableVertexEditing = () => {
+    if (!drawnItemsRef.current) return;
+    
+    setIsEditingVertices(!isEditingVertices);
+    setIsDrawing(false); // Disable drawing mode when editing
+
+    const layers = drawnItemsRef.current.getLayers();
+    if (layers.length === 0) {
+      alert('Please draw a field first');
+      return;
+    }
+
+    const polygon = layers[0] as L.Polygon;
+    const vertices = polygon.getLatLngs()[0] as L.LatLng[];
+
+    if (isEditingVertices) {
+      // Disable editing
+      vertexMarkers.forEach(marker => {
+        mapRef.current?.removeLayer(marker);
+      });
+      setVertexMarkers([]);
+    } else {
+      // Enable editing
+      addDraggableVertexMarkers(vertices);
+    }
+  };
+
+  // Add new function for draggable vertex markers
+  const clearAllVertexMarkers = () => {
+    if (!mapRef.current) return;
+    
+    // Remove all vertex-related elements from the map
+    mapRef.current.eachLayer((layer) => {
+      if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
+        const element = layer.getElement();
+        if (element && 
+           (element.classList.contains('vertex-marker') || 
+            element.querySelector('.vertex-marker-inner'))) {
+          mapRef.current?.removeLayer(layer);
+        }
+      }
+    });
+    
+    // Also clear from state
+    vertexMarkers.forEach(marker => {
+      if (mapRef.current) {
+        mapRef.current.removeLayer(marker);
+      }
+    });
+    setVertexMarkers([]);
+  };
+
+  const addDraggableVertexMarkers = (vertices: L.LatLng[]) => {
+    // Aggressively clear all existing markers first
+    clearAllVertexMarkers();
+
+    const newMarkers = vertices.map((vertex, index) => {
+      const marker = L.marker(vertex, {
+        icon: L.divIcon({
+          className: 'vertex-marker',
+          html: '<div class="vertex-marker-inner"></div>',
+          iconSize: [12, 12],
+          iconAnchor: [6, 6]
+        }),
+        draggable: true,
+        bubblingMouseEvents: false,
+        // Add unique identifier
+        uniqueID: `vertex-${index}-${Date.now()}`
+      });
+
+      if (mapRef.current) {
+        marker.addTo(mapRef.current);
+
+        marker.on('dragstart', () => {
+          // Clear all markers except the current one
+          mapRef.current?.eachLayer((layer) => {
+            if (layer instanceof L.Marker && layer !== marker) {
+              const element = layer.getElement();
+              if (element && 
+                 (element.classList.contains('vertex-marker') || 
+                  element.querySelector('.vertex-marker-inner'))) {
+                mapRef.current?.removeLayer(layer);
+              }
+            }
+          });
+        });
+
+        marker.on('drag', (e) => {
+          const layers = drawnItemsRef.current?.getLayers() || [];
+          if (layers.length > 0) {
+            const polygon = layers[0] as L.Polygon;
+            const currentVertices = [...polygon.getLatLngs()[0] as L.LatLng[]];
+            
+            // Update vertex position
+            currentVertices[index] = e.target.getLatLng();
+            
+            // Update polygon immediately during drag
+            polygon.setLatLngs(currentVertices);
+            
+            // Update area
+            updateAreaSize(L.GeometryUtil.geodesicArea(currentVertices));
+            
+            // Update distance markers during drag
+            updateDistanceMarkers(currentVertices);
+          }
+        });
+
+        marker.on('dragend', (e) => {
+          const el = marker.getElement();
+          if (el) {
+            el.querySelector('.vertex-marker-inner')?.classList.remove('dragging');
+          }
+
+          const layers = drawnItemsRef.current?.getLayers() || [];
+          if (layers.length > 0) {
+            const polygon = layers[0] as L.Polygon;
+            const currentVertices = [...polygon.getLatLngs()[0] as L.LatLng[]];
+            
+            // Update final vertex position
+            currentVertices[index] = e.target.getLatLng();
+            
+            // Update polygon one final time
+            polygon.setLatLngs(currentVertices);
+            
+            // Update area and distances
+            updateAreaSize(L.GeometryUtil.geodesicArea(currentVertices));
+            updateDistanceMarkers(currentVertices);
+            
+            // Save to undo stack
+            setUndoStack(prev => [...prev, currentVertices]);
+            setRedoStack([]);
+          }
+        });
+      }
+
+      return marker;
+    });
+
+    setVertexMarkers(newMarkers);
+  };
+
+  // Update CSS styles
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      .vertex-marker {
+        background: none !important;
+        border: none !important;
+      }
+      .vertex-marker-inner {
+        width: 12px;
+        height: 12px;
+        background: white;
+        border: 2px solid #3388ff;
+        border-radius: 50%;
+        cursor: move;
+      }
+      .vertex-marker-inner.dragging {
+        background: #3388ff;
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
+
+  // Add CSS for distance markers
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      .distance-marker {
+        background: none;
+        border: none;
+        pointer-events: none;
+      }
+      .distance-label {
+        background: rgba(0, 0, 0, 0.7);
+        color: white;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-size: 12px;
+        font-weight: 500;
+        white-space: nowrap;
+        display: inline-block;
+        transform-origin: center;
+        text-align: center;
+      }
+    `;
+    document.head.appendChild(style);
+    return () => {
+      document.head.removeChild(style);
+    };
+  }, []);
+
+  // Add distance calculation function
+  const distanceToSegment = (point: L.LatLng, start: L.LatLng, end: L.LatLng) => {
+    const x = point.lat;
+    const y = point.lng;
+    const x1 = start.lat;
+    const y1 = start.lng;
+    const x2 = end.lat;
+    const y2 = end.lng;
+
+    const A = x - x1;
+    const B = y - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+
+    const dot = A * C + B * D;
+    const len_sq = C * C + D * D;
+    let param = -1;
+
+    if (len_sq !== 0) {
+      param = dot / len_sq;
+    }
+
+    let xx, yy;
+
+    if (param < 0) {
+      xx = x1;
+      yy = y1;
+    } else if (param > 1) {
+      xx = x2;
+      yy = y2;
+    } else {
+      xx = x1 + param * C;
+      yy = y1 + param * D;
+    }
+
+    const dx = x - xx;
+    const dy = y - yy;
+
+    return Math.sqrt(dx * dx + dy * dy) * 111000; // Convert to meters (roughly)
+  };
+
+  // Update edge click handler
+  const handleEdgeClick = (e: L.LeafletMouseEvent) => {
+    if (!isEditingVertices || !drawnItemsRef.current) return;
+
+    const clickPoint = e.latlng;
+    const layers = drawnItemsRef.current.getLayers();
+    if (layers.length === 0) return;
+
+    const polygon = layers[0] as L.Polygon;
+    const vertices = [...polygon.getLatLngs()[0] as L.LatLng[]];
+    
+    let minDistance = Infinity;
+    let insertIndex = -1;
+    let closestPoint: L.LatLng | null = null;
+    
+    // Find the closest edge and the exact point on that edge
+    for (let i = 0; i < vertices.length; i++) {
+      const p1 = vertices[i];
+      const p2 = vertices[(i + 1) % vertices.length];
+      
+      // Calculate the closest point on the line segment
+      const point = getClosestPointOnSegment(clickPoint, p1, p2);
+      const distance = clickPoint.distanceTo(point);
+      
+      if (distance < minDistance) {
+        minDistance = distance;
+        insertIndex = i + 1;
+        closestPoint = point;
+      }
+    }
+
+    // Increased threshold to 100 meters
+    if (minDistance < 100 && closestPoint) {
+      // Insert the point exactly on the edge
+      vertices.splice(insertIndex, 0, closestPoint);
+      
+      // Update polygon
+      polygon.setLatLngs(vertices);
+      
+      // Update area
+      const area = L.GeometryUtil.geodesicArea(vertices);
+      updateAreaSize(area);
+      
+      // Clear existing markers
+      vertexMarkers.forEach(marker => {
+        if (mapRef.current) {
+          mapRef.current.removeLayer(marker);
+        }
+      });
+      
+      // Add new markers
+      addDraggableVertexMarkers(vertices);
+      updateDistanceMarkers(vertices);
+    }
+  };
+
+  // Helper function to get closest point on a line segment
+  const getClosestPointOnSegment = (p: L.LatLng, p1: L.LatLng, p2: L.LatLng): L.LatLng => {
+    const x = p.lat;
+    const y = p.lng;
+    const x1 = p1.lat;
+    const y1 = p1.lng;
+    const x2 = p2.lat;
+    const y2 = p2.lng;
+
+    const A = x - x1;
+    const B = y - y1;
+    const C = x2 - x1;
+    const D = y2 - y1;
+
+    const dot = A * C + B * D;
+    const len_sq = C * C + D * D;
+    let param = -1;
+
+    if (len_sq !== 0) {
+      param = dot / len_sq;
+    }
+
+    let xx, yy;
+
+    if (param < 0) {
+      xx = x1;
+      yy = y1;
+    } else if (param > 1) {
+      xx = x2;
+      yy = y2;
+    } else {
+      xx = x1 + param * C;
+      yy = y1 + param * D;
+    }
+
+    return L.latLng(xx, yy);
+  };
+
+  // Add this to your component initialization
+  useEffect(() => {
+    if (!mapRef.current || !drawnItemsRef.current) return;
+
+    const map = mapRef.current;
+    const drawnItems = drawnItemsRef.current;
+
+    const addClickListenerToPolygon = () => {
+      drawnItems.eachLayer((layer) => {
+        if (layer instanceof L.Polygon) {
+          layer.on('click', handleEdgeClick);
+        }
+      });
+    };
+
+    // Add listener to existing polygon
+    addClickListenerToPolygon();
+
+    // Also add listener when new polygon is created
+    drawnItems.on('layeradd', addClickListenerToPolygon);
+
+    return () => {
+      drawnItems.eachLayer((layer) => {
+        if (layer instanceof L.Polygon) {
+          layer.off('click', handleEdgeClick);
+        }
+      });
+      drawnItems.off('layeradd', addClickListenerToPolygon);
+    };
+  }, [isEditingVertices]); // Add other dependencies if needed
+
+  // Make sure polygon is clickable in CSS
+  useEffect(() => {
+    const style = document.createElement('style');
+    style.textContent = `
+      .leaflet-interactive {
+        cursor: pointer !important;
+      }
+      .vertex-marker-inner {
+        cursor: move !important;
+      }
+    `;
+    document.head.appendChild(style);
     return () => {
       document.head.removeChild(style);
     };
@@ -1461,6 +1841,17 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                 <path fillRule="evenodd" d="M12 3.5l4 4v9.5H4V7.5l4-4h4zm-2 1.5v3h2V5h-2z" clipRule="evenodd" />
               </svg>
+            </button>
+
+            {/* Add Edit Vertices Button */}
+            <button
+              className={`flex items-center justify-center w-10 h-10 sm:w-12 sm:h-12 rounded-lg transition-all duration-200 ${
+                isEditingVertices ? 'bg-blue-500 text-white' : 'bg-gray-50 hover:bg-gray-100'
+              }`}
+              onClick={enableVertexEditing}
+              title="Edit Vertices"
+            >
+              <FaPen size={18} />
             </button>
           </div>
         </div>
