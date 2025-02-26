@@ -1307,33 +1307,15 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
   };
 
   // Add new function for draggable vertex markers
-  const clearAllVertexMarkers = () => {
-    if (!mapRef.current) return;
-    
-    // Remove all vertex-related elements from the map
-    mapRef.current.eachLayer((layer) => {
-      if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
-        const element = layer.getElement();
-        if (element && 
-           (element.classList.contains('vertex-marker') || 
-            element.querySelector('.vertex-marker-inner'))) {
-          mapRef.current?.removeLayer(layer);
-        }
-      }
-    });
-    
-    // Also clear from state
-    vertexMarkers.forEach(marker => {
-      if (mapRef.current) {
-        mapRef.current.removeLayer(marker);
-      }
-    });
-    setVertexMarkers([]);
-  };
-
   const addDraggableVertexMarkers = (vertices: L.LatLng[]) => {
-    // Aggressively clear all existing markers first
-    clearAllVertexMarkers();
+    if (mapRef.current) {
+      // Clear existing markers
+      vertexMarkers.forEach(marker => {
+        if (mapRef.current) {
+          mapRef.current.removeLayer(marker);
+        }
+      });
+    }
 
     const newMarkers = vertices.map((vertex, index) => {
       const marker = L.marker(vertex, {
@@ -1343,27 +1325,21 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
           iconSize: [12, 12],
           iconAnchor: [6, 6]
         }),
-        draggable: true,
-        bubblingMouseEvents: false,
-        // Add unique identifier
-        uniqueID: `vertex-${index}-${Date.now()}`
+        draggable: true
       });
 
       if (mapRef.current) {
         marker.addTo(mapRef.current);
 
         marker.on('dragstart', () => {
-          // Clear all markers except the current one
-          mapRef.current?.eachLayer((layer) => {
-            if (layer instanceof L.Marker && layer !== marker) {
-              const element = layer.getElement();
-              if (element && 
-                 (element.classList.contains('vertex-marker') || 
-                  element.querySelector('.vertex-marker-inner'))) {
+          // Remove the previous position marker immediately when drag starts
+          if (mapRef.current) {
+            mapRef.current.eachLayer((layer) => {
+              if (layer instanceof L.CircleMarker) {
                 mapRef.current?.removeLayer(layer);
               }
-            }
-          });
+            });
+          }
         });
 
         marker.on('drag', (e) => {
@@ -1371,45 +1347,10 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
           if (layers.length > 0) {
             const polygon = layers[0] as L.Polygon;
             const currentVertices = [...polygon.getLatLngs()[0] as L.LatLng[]];
-            
-            // Update vertex position
             currentVertices[index] = e.target.getLatLng();
-            
-            // Update polygon immediately during drag
             polygon.setLatLngs(currentVertices);
-            
-            // Update area
-            updateAreaSize(L.GeometryUtil.geodesicArea(currentVertices));
-            
-            // Update distance markers during drag
-            updateDistanceMarkers(currentVertices);
-          }
-        });
-
-        marker.on('dragend', (e) => {
-          const el = marker.getElement();
-          if (el) {
-            el.querySelector('.vertex-marker-inner')?.classList.remove('dragging');
-          }
-
-          const layers = drawnItemsRef.current?.getLayers() || [];
-          if (layers.length > 0) {
-            const polygon = layers[0] as L.Polygon;
-            const currentVertices = [...polygon.getLatLngs()[0] as L.LatLng[]];
-            
-            // Update final vertex position
-            currentVertices[index] = e.target.getLatLng();
-            
-            // Update polygon one final time
-            polygon.setLatLngs(currentVertices);
-            
-            // Update area and distances
             updateAreaSize(L.GeometryUtil.geodesicArea(currentVertices));
             updateDistanceMarkers(currentVertices);
-            
-            // Save to undo stack
-            setUndoStack(prev => [...prev, currentVertices]);
-            setRedoStack([]);
           }
         });
       }
@@ -1420,7 +1361,7 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
     setVertexMarkers(newMarkers);
   };
 
-  // Update CSS styles
+  // Add CSS for vertex markers
   useEffect(() => {
     const style = document.createElement('style');
     style.textContent = `
@@ -1435,9 +1376,6 @@ const Map: React.FC<MapProps> = ({ onAreaUpdate, apiKey }) => {
         border: 2px solid #3388ff;
         border-radius: 50%;
         cursor: move;
-      }
-      .vertex-marker-inner.dragging {
-        background: #3388ff;
       }
     `;
     document.head.appendChild(style);
